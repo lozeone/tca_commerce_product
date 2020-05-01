@@ -1,0 +1,101 @@
+<?php
+
+/**
+ * @file
+ * Contains tca_commerce_product.module.
+ */
+
+use Drupal\Core\Database\Query\AlterableInterface;
+use Drupal\tca_commerce_product\TcaCommerceProductAccessControlHandler;
+use Drupal\views\ViewExecutable;
+use Drupal\views\Plugin\views\query\QueryPluginBase;
+
+/**
+ * Get TCA disabled commerce_product types.
+ */
+function _tca_commerce_product_get_disabled_types() {
+  $types = \Drupal::entityTypeManager()
+    ->getStorage('commerce_product_type')
+    ->loadMultiple();
+  $settings_manager = \Drupal::service('tca.tca_settings_manager');
+
+  $disabled_types = [];
+  foreach ($types as $commerce_product_type_id => $definition) {
+    $settings = $settings_manager->loadSettingsAsConfig('commerce_product_type', $commerce_product_type_id);
+    if (!$settings->get('active')) {
+      $disabled_types[] = $commerce_product_type_id;
+    }
+  }
+
+  return $disabled_types;
+}
+
+/**
+ * Implements hook_query_TAG_alter().
+ */
+function tca_commerce_product_query_search_commerce_product_search_alter(AlterableInterface $query) {
+  $account = \Drupal::currentUser();
+  $bypass_permitted = $account->hasPermission('tca bypass commerce_product');
+
+  if (!$bypass_permitted) {
+    $disabled_types = _tca_commerce_product_get_disabled_types();
+
+    $group = $query->orConditionGroup()
+      ->condition('n.tca_active', NULL, 'IS NULL')
+      ->condition('n.tca_active', 0)
+      ->condition('n.type', $disabled_types, 'IN');
+
+    $query->condition($group);
+  }
+}
+
+/**
+ * Implements hook_views_query_alter().
+ */
+function tca_commerce_product_views_query_alter(ViewExecutable $view, QueryPluginBase $query) {
+  $account = \Drupal::currentUser();
+  $bypass_permitted = $account->hasPermission('tca bypass commerce_product');
+
+  if (!$bypass_permitted) {
+    $disabled_types = _tca_commerce_product_get_disabled_types();
+
+    $info = $query->getEntityTableInfo('commerce_product_field_data');
+    if (isset($info['commerce_product'])) {
+      $alias = $info['commerce_product']['alias'];
+      $group_name = 'tca_commerce_product';
+      $query->where[$group_name] = [
+        'conditions' => [
+          [
+            'field' => $alias . '.tca_active',
+            'value' => NULL,
+            'operator' => 'IS NULL',
+          ],
+          [
+            'field' => $alias . '.tca_active',
+            'value' => 0,
+            'operator' => '=',
+          ],
+        ],
+        'args' => [],
+        'type' => 'OR',
+      ];
+
+      // Add disabled types condition.
+      if (!empty($disabled_types)) {
+        $query->where[$group_name]['conditions'][] = [
+          'field' => $alias . '.type',
+          'value' => $disabled_types,
+          'operator' => 'IN',
+        ];
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_entity_type_alter().
+ */
+function tca_commerce_product_entity_type_alter(array &$entity_types) {
+  //dsm($entity_types['commerce_product']);
+  $entity_types['commerce_product']->setHandlerClass('access', TcaCommerceProductAccessControlHandler::class);
+}
